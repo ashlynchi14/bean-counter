@@ -1,19 +1,23 @@
 """
-model.py — Unit-economics & expansion logic for Bean Counter.
+model.py — Unit-economics, break-even, and strategic-summary logic for Bean
+Counter.
 
-Two go-to-market channels for a specialty coffee roaster deciding how to
-scale:
+The strategic question this model exists to answer: a specialty coffee
+company wants to grow. Should it deploy capital toward acquiring wholesale
+accounts (cafes, offices, restaurants — subscription-like economics: CAC,
+ACV, monthly logo churn), or toward opening its own retail cafes (build-out
+capex, rent, COGS, labor, footfall)?
 
-  1. Wholesale / B2B  — signing cafes, offices, and restaurants to recurring
-     roasted-bean accounts (subscription-like: CAC, ACV, monthly logo churn,
-     sales-cycle length — the same shape as enterprise SaaS unit economics).
-  2. Retail           — opening company-owned cafes (build-out capex, rent,
-     COGS, labor, footfall).
+Everything in this file is pure and UI-free — app.py is a thin presentation
+layer over it. Every default is an *illustrative* planning assumption
+(labeled as such in the UI), not a claimed market fact.
 
-All functions are pure and take plain numbers/dicts in, DataFrames out, so
-app.py stays a thin presentation layer over this logic. Every default is an
-*illustrative* planning assumption (labeled as such in the UI), not a claimed
-market fact.
+Design note on the wholesale/retail comparison: both channels' cumulative
+figures are tracked NET of the capital spent to get there — wholesale nets
+out CAC spend on new signups each month, retail nets out build-out capex as
+stores open — so the "which channel wins" comparison is apples-to-apples.
+Earlier versions of this model tracked wholesale gross profit without
+subtracting CAC, which overstated wholesale's advantage; that's fixed here.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 MONTHS_DEFAULT = 36
+COMPARISON_HORIZON_MONTHS = 24  # the month at which channels are compared
 
 # ---------------------------------------------------------------------------
 # Wholesale / B2B channel
@@ -61,27 +66,32 @@ def wholesale_cohort_projection(
     acv: float,
     gross_margin: float,
     monthly_churn: float,
+    cac: float,
     new_accounts_per_month: float,
     months: int = MONTHS_DEFAULT,
     starting_accounts: float = 0.0,
 ) -> pd.DataFrame:
     """
     Bathtub model: active accounts each month = last month's survivors +
-    this month's new signups. Returns a month-by-month DataFrame of active
-    accounts, MRR, and cumulative gross profit for the three standard
-    scenarios (Conservative / Base / Aggressive).
+    this month's new signups, each new signup costing CAC up front. Returns
+    a month-by-month DataFrame with active accounts, MRR, cumulative gross
+    profit, and cumulative *net* cash position (gross profit minus CAC
+    spend) for the three standard scenarios.
     """
     rows = []
     for scenario, adj in SCENARIO_ADJUSTMENTS.items():
         accounts = starting_accounts
         cum_gross_profit = 0.0
+        cum_net_cash = 0.0
         churn = min(max(monthly_churn * adj["churn_mult"], 0.0), 0.95)
         adds = new_accounts_per_month * adj["new_accounts_mult"]
         for m in range(1, months + 1):
             accounts = accounts * (1 - churn) + adds
             mrr = accounts * (acv / 12)
             monthly_gross_profit = mrr * gross_margin
+            monthly_cac_spend = adds * cac
             cum_gross_profit += monthly_gross_profit
+            cum_net_cash += monthly_gross_profit - monthly_cac_spend
             rows.append(
                 {
                     "month": m,
@@ -90,17 +100,26 @@ def wholesale_cohort_projection(
                     "mrr": mrr,
                     "arr": mrr * 12,
                     "cum_gross_profit": cum_gross_profit,
+                    "cum_net_cash_position": cum_net_cash,
                 }
             )
     return pd.DataFrame(rows)
 
 
-def cohort_retention_curve(monthly_churn: float, months: int = 24) -> pd.DataFrame:
-    """Single starting cohort of 100 accounts, decayed by churn — the
-    'how much of one signup class survives' curve hiring managers expect."""
-    t = np.arange(0, months + 1)
-    retained = 100 * (1 - monthly_churn) ** t
-    return pd.DataFrame({"month": t, "pct_retained": retained})
+def ltv_cac_sensitivity_to_churn(
+    acv: float,
+    gross_margin: float,
+    cac: float,
+    churn_min: float = 0.005,
+    churn_max: float = 0.08,
+    n: int = 24,
+) -> pd.DataFrame:
+    """LTV:CAC across a range of monthly churn, holding ACV/margin/CAC fixed
+    — the decision-relevant sensitivity: how much air is in the number the
+    user is already looking at, not just a picture of the churn input."""
+    churns = np.linspace(churn_min, churn_max, n)
+    ratios = [ltv_to_cac(acv, gross_margin, c, cac) for c in churns]
+    return pd.DataFrame({"monthly_churn": churns, "ltv_cac": ratios})
 
 
 # ---------------------------------------------------------------------------
@@ -116,15 +135,21 @@ def retail_unit_economics(
     cogs_pct: float,
     labor_pct: float,
 ) -> dict:
+    """Revenue built from operating drivers (ticket x transactions x days)
+    and gross profit broken into its named cost lines, so the numbers are
+    traceable rather than opaque."""
     monthly_revenue = avg_ticket * daily_transactions * 30
-    monthly_gross_profit = (
-        monthly_revenue * (1 - cogs_pct) - monthly_revenue * labor_pct - monthly_rent
-    )
+    cogs_amount = monthly_revenue * cogs_pct
+    labor_amount = monthly_revenue * labor_pct
+    monthly_gross_profit = monthly_revenue - cogs_amount - labor_amount - monthly_rent
     payback_months = (
         build_out_cost / monthly_gross_profit if monthly_gross_profit > 0 else float("inf")
     )
     return {
         "monthly_revenue": monthly_revenue,
+        "cogs_amount": cogs_amount,
+        "labor_amount": labor_amount,
+        "rent": monthly_rent,
         "monthly_gross_profit": monthly_gross_profit,
         "payback_months": payback_months,
         "annual_gross_profit": monthly_gross_profit * 12,
@@ -142,7 +167,9 @@ def retail_projection(
     months: int = MONTHS_DEFAULT,
 ) -> pd.DataFrame:
     """Cumulative net cash position if opening cafes_per_year new stores,
-    each ramping to full unit economics after a 3-month ramp period."""
+    each ramping to full unit economics immediately (a simplification —
+    real stores ramp over a few months, but that adds a parameter for
+    limited decision value here)."""
     unit = retail_unit_economics(
         build_out_cost, monthly_rent, avg_ticket, daily_transactions, cogs_pct, labor_pct
     )
@@ -204,86 +231,228 @@ def market_sizing(
 
 
 # ---------------------------------------------------------------------------
-# Executive takeaway generation
+# Strategic summary: metric -> interpretation -> decision
 # ---------------------------------------------------------------------------
 
 
-def generate_takeaway(
-    cac_payback: float,
+def _fmt_money(x: float) -> str:
+    sign = "-" if x < 0 else ""
+    return f"{sign}${abs(x):,.0f}"
+
+
+def generate_strategic_summary(
     ltv_cac: float,
-    sales_cycle_months: float,
-    retail_payback: float,
-    wholesale_24mo_profit: float,
-    retail_24mo_cash: float,
-    som_penetration: float,
-) -> list[str]:
-    """Return a short list of plain-English, threshold-driven takeaways —
-    the kind of read a Chief of Staff wants in 15 seconds, not a chart."""
-    lines = []
+    cac_payback: float,
+    retail_payback_months: float,
+    wholesale_net_24: float,
+    retail_net_24: float,
+    sales_cycle_months: float = 0.0,
+) -> dict:
+    """Three short, structured conclusions — not a memo. Benchmarks are
+    described as general planning heuristics, not asserted as universal
+    rules, since they aren't sourced to any specific investor or market."""
 
+    payback_str = f"{cac_payback:.1f} months" if cac_payback != float("inf") else "never"
     if ltv_cac >= 3:
-        lines.append(
-            f"**Wholesale unit economics are healthy** — LTV:CAC of {ltv_cac:.1f}x clears "
-            "the 3x bar investors typically look for."
-        )
+        wholesale_interp = "Indicates strong modeled unit economics under the current assumptions."
     elif ltv_cac >= 1:
-        lines.append(
-            f"**Wholesale unit economics are marginal** — LTV:CAC of {ltv_cac:.1f}x is "
-            "positive but below the 3x bar; churn or CAC needs to improve before scaling spend."
+        wholesale_interp = (
+            "Positive but thin — a modest rise in churn or CAC would erode this margin."
         )
     else:
-        lines.append(
-            f"**Wholesale unit economics don't work yet** — LTV:CAC of {ltv_cac:.1f}x means "
-            "each account costs more to acquire than it returns. Fix churn or CAC before adding volume."
+        wholesale_interp = (
+            "Each account currently costs more to acquire than it returns over its lifetime."
         )
+    if cac_payback != float("inf") and sales_cycle_months > 0:
+        total_cycle = cac_payback + sales_cycle_months
+        wholesale_interp += (
+            f" Add the {sales_cycle_months:.1f}-month sales cycle, and cash isn't fully "
+            f"recovered until about {total_cycle:.1f} months after outreach starts."
+        )
+    wholesale = {
+        "metric": f"LTV:CAC {ltv_cac:.2f}x  ·  CAC payback {payback_str}",
+        "interpretation": wholesale_interp,
+    }
 
-    payback_vs_cycle = cac_payback - sales_cycle_months
-    if cac_payback <= 12:
-        lines.append(
-            f"CAC payback is {cac_payback:.1f} months (sales cycle: {sales_cycle_months:.1f} "
-            "months) — within the healthy under-12-month range for B2B wholesale."
+    if retail_payback_months == float("inf"):
+        retail_interp = (
+            "At current rent, ticket size, and traffic assumptions, a new cafe does not "
+            "earn back its build-out cost within the modeled horizon."
         )
+    elif retail_payback_months <= 24:
+        retail_interp = "Payback lands within a typical multi-year retail investment window."
     else:
-        lines.append(
-            f"CAC payback is {cac_payback:.1f} months — longer than the 12-month rule of "
-            "thumb, so cash gets tied up per account for a while before it pays back."
+        retail_interp = (
+            "Payback runs longer than a typical multi-year retail investment window."
         )
+    retail_payback_str = (
+        f"{retail_payback_months:.1f} months" if retail_payback_months != float("inf") else "beyond the modeled horizon"
+    )
+    retail = {
+        "metric": f"Build-out payback: {retail_payback_str}",
+        "interpretation": retail_interp,
+    }
 
-    if retail_payback != float("inf") and retail_payback <= 24:
-        lines.append(
-            f"A new cafe pays back its build-out in {retail_payback:.1f} months — solid "
-            "for brick-and-mortar retail (24 months is a common hurdle)."
-        )
-    elif retail_payback == float("inf"):
-        lines.append(
-            "At current rent/ticket/traffic assumptions, a new cafe never breaks even on "
-            "build-out cost — retail expansion needs better unit economics before opening more stores."
-        )
+    wholesale_viable = ltv_cac >= 1
+    retail_viable = retail_payback_months != float("inf")
+
+    if not wholesale_viable and not retail_viable:
+        recommendation = {
+            "choice": "Neither",
+            "reason": (
+                "Neither channel's unit economics work as modeled — fix wholesale CAC/churn "
+                "or retail rent/traffic assumptions before committing further capital to either."
+            ),
+        }
+    elif wholesale_viable and (not retail_viable or wholesale_net_24 >= retail_net_24):
+        recommendation = {
+            "choice": "Wholesale",
+            "reason": (
+                f"At month {COMPARISON_HORIZON_MONTHS}, wholesale's net cash position "
+                f"({_fmt_money(wholesale_net_24)}) is ahead of retail's ({_fmt_money(retail_net_24)}), and "
+                f"it's the more capital-efficient way to deploy the next dollar right now."
+            ),
+        }
     else:
-        lines.append(
-            f"A new cafe takes {retail_payback:.1f} months to pay back its build-out — "
-            "slower than the typical 24-month retail hurdle."
-        )
+        recommendation = {
+            "choice": "Retail",
+            "reason": (
+                f"At month {COMPARISON_HORIZON_MONTHS}, retail's net cash position "
+                f"({_fmt_money(retail_net_24)}) is ahead of wholesale's ({_fmt_money(wholesale_net_24)}) "
+                f"under the current assumptions."
+            ),
+        }
 
-    if wholesale_24mo_profit > retail_24mo_cash:
-        lines.append(
-            "**Recommendation: prioritize wholesale.** At month 24, cumulative gross profit "
-            f"from wholesale (${wholesale_24mo_profit:,.0f}) outpaces retail's cash position "
-            f"(${retail_24mo_cash:,.0f}) for the same modeling horizon — wholesale is the more "
-            "capital-efficient growth lever right now."
-        )
-    else:
-        lines.append(
-            "**Recommendation: retail is pulling ahead.** At month 24, cumulative cash from "
-            f"retail (${retail_24mo_cash:,.0f}) outpaces wholesale's gross profit "
-            f"(${wholesale_24mo_profit:,.0f}) — worth protecting store-opening pace even though "
-            "it's more capital-intensive up front."
-        )
+    return {"wholesale": wholesale, "retail": retail, "recommendation": recommendation}
 
-    lines.append(
-        f"Modeled wholesale growth reaches ~{som_penetration:.0%} penetration of the "
-        "serviceable addressable market by month 36 — a sanity check on whether the new-accounts "
-        "assumption is realistic for the region selected."
+
+# ---------------------------------------------------------------------------
+# "What would change the recommendation?" — break-even thresholds
+# ---------------------------------------------------------------------------
+
+
+def _linear_crossover(f, x_low: float, x_high: float, target: float = 0.0):
+    """Two-point solve for the x where f(x) == target. Exact when f is
+    linear in x (true for CAC, build-out cost, and revenue drivers in this
+    model over a fixed horizon — each only scales one additive term), and a
+    reasonable first-order estimate otherwise. Returns None if f doesn't
+    depend on x at all (the two points come out equal)."""
+    y_low, y_high = f(x_low), f(x_high)
+    if y_high == y_low:
+        return None
+    return x_low + (target - y_low) * (x_high - x_low) / (y_high - y_low)
+
+
+def _wholesale_net_cash_at(acv, gross_margin, monthly_churn, cac, new_accounts_per_month, month):
+    df = wholesale_cohort_projection(acv, gross_margin, monthly_churn, cac, new_accounts_per_month, months=month)
+    row = df[(df.scenario == "Base") & (df.month == month)]
+    return float(row["cum_net_cash_position"].iloc[0])
+
+
+def _retail_net_cash_at(build_out_cost, monthly_rent, avg_ticket, daily_transactions, cogs_pct, labor_pct, cafes_per_year, month):
+    df = retail_projection(build_out_cost, monthly_rent, avg_ticket, daily_transactions, cogs_pct, labor_pct, cafes_per_year, months=month)
+    row = df[df.month == month]
+    return float(row["cum_cash_position"].iloc[0])
+
+
+def compute_breakevens(
+    acv: float,
+    gross_margin_ws: float,
+    monthly_churn: float,
+    cac: float,
+    new_accounts_per_month: float,
+    build_out_cost: float,
+    monthly_rent: float,
+    avg_ticket: float,
+    daily_transactions: float,
+    cogs_pct: float,
+    labor_pct: float,
+    cafes_per_year: float,
+    horizon_months: int = COMPARISON_HORIZON_MONTHS,
+) -> dict:
+    """For each key driver, find the value at which the strategic
+    recommendation flips, holding every other input at its current slider
+    value. Each entry reports current value, break-even value, direction
+    of the change needed, and whether that break-even falls within a
+    realistic range (flagged rather than shown as a real number if not)."""
+
+    wholesale_net = _wholesale_net_cash_at(acv, gross_margin_ws, monthly_churn, cac, new_accounts_per_month, horizon_months)
+    retail_net = _retail_net_cash_at(build_out_cost, monthly_rent, avg_ticket, daily_transactions, cogs_pct, labor_pct, cafes_per_year, horizon_months)
+
+    results = {}
+
+    # 1. Wholesale churn — analytic: LTV:CAC = 1 when
+    #    churn = (ACV/12 * gross_margin) / CAC
+    monthly_gp_per_account = (acv / 12) * gross_margin_ws
+    churn_breakeven = monthly_gp_per_account / cac if cac > 0 else None
+    results["churn"] = _threshold_entry(
+        label="Wholesale monthly churn",
+        current=monthly_churn,
+        breakeven=churn_breakeven,
+        valid_range=(0.0, 1.0),
+        what_it_means="Above this, wholesale accounts stop paying for themselves (LTV:CAC < 1).",
     )
 
-    return lines
+    # 2. Wholesale CAC vs. retail — exactly linear in CAC (new-signup
+    #    schedule doesn't depend on CAC), so the two-point solve is exact.
+    cac_hi = max(cac * 4, cac + 2000)
+    cac_breakeven = _linear_crossover(
+        lambda c: _wholesale_net_cash_at(acv, gross_margin_ws, monthly_churn, c, new_accounts_per_month, horizon_months) - retail_net,
+        0, cac_hi,
+    )
+    results["cac"] = _threshold_entry(
+        label="Wholesale CAC",
+        current=cac,
+        breakeven=cac_breakeven,
+        valid_range=(0.0, cac * 10),
+        what_it_means="Beyond this, retail overtakes wholesale as the better use of capital.",
+    )
+
+    # 3. Cafe daily transactions vs. wholesale — linear in transactions
+    #    (revenue and gross profit both scale linearly with it).
+    tx_hi = max(daily_transactions * 4, daily_transactions + 200)
+    tx_breakeven = _linear_crossover(
+        lambda tx: _retail_net_cash_at(build_out_cost, monthly_rent, avg_ticket, tx, cogs_pct, labor_pct, cafes_per_year, horizon_months) - wholesale_net,
+        0, tx_hi,
+    )
+    revenue_breakeven = avg_ticket * tx_breakeven * 30 if tx_breakeven is not None else None
+    results["cafe_revenue"] = _threshold_entry(
+        label="Cafe monthly revenue",
+        current=avg_ticket * daily_transactions * 30,
+        breakeven=revenue_breakeven,
+        valid_range=(0.0, avg_ticket * daily_transactions * 30 * 10),
+        what_it_means="At this level, retail catches up to wholesale's capital efficiency.",
+    )
+
+    # 4. Cafe build-out cost vs. wholesale — linear in build-out cost
+    #    (capex is the only term build-out cost enters).
+    build_hi = max(build_out_cost * 4, build_out_cost + 200_000)
+    build_breakeven = _linear_crossover(
+        lambda b: _retail_net_cash_at(b, monthly_rent, avg_ticket, daily_transactions, cogs_pct, labor_pct, cafes_per_year, horizon_months) - wholesale_net,
+        0, build_hi,
+    )
+    results["build_out"] = _threshold_entry(
+        label="Cafe build-out cost",
+        current=build_out_cost,
+        breakeven=build_breakeven,
+        valid_range=(0.0, build_out_cost * 10),
+        what_it_means="Below this, a cheaper build-out makes retail competitive with wholesale.",
+    )
+
+    return results
+
+
+def _threshold_entry(label, current, breakeven, valid_range, what_it_means) -> dict:
+    lo, hi = valid_range
+    in_range = breakeven is not None and lo < breakeven <= hi
+    direction = None
+    if in_range:
+        direction = "up" if breakeven > current else "down"
+    return {
+        "label": label,
+        "current": current,
+        "breakeven": breakeven if in_range else None,
+        "in_range": in_range,
+        "direction": direction,
+        "what_it_means": what_it_means,
+    }

@@ -47,13 +47,14 @@ SCENARIO_COLORS = {"Conservative": AMBER, "Base": RUST, "Aggressive": GREEN}
 
 st.set_page_config(
     page_title="Bean Counter — Coffee Expansion Simulator",
+    page_icon="☕",
     layout="wide",
 )
 
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
-st.title("Bean Counter")
+st.title("☕ Bean Counter")
 st.caption(
     "A unit-economics model for expanding a specialty coffee business — "
     "wholesale accounts vs. company-owned cafes. Adjust assumptions in the "

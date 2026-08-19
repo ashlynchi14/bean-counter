@@ -103,27 +103,51 @@ st.info(
 with st.expander("How the model works", expanded=False):
     st.markdown(
         f"""
-**Wholesale LTV.** Each account generates monthly gross profit (ACV ÷ 12 ×
-gross margin). The headline LTV:CAC uses a **{LTV_HORIZON_MONTHS}-month
-window** — it sums the gross profit an average account is expected to
-generate, discounted only by the chance it's still active each month, and
-divides by CAC. A separate steady-state figure (shown alongside it) assumes
-an account stays forever, which is the textbook formula but can look
-artificially large at low churn — the finite-horizon number is the more
-defensible one to lead with.
+**Wholesale contribution margin.** The wholesale side is modeled on
+*contribution margin*, not a bare product-cost margin — the % of revenue
+left after product COGS, fulfillment/shipping, and ongoing account
+servicing/customer support. It's still a single slider (not a full P&L) by
+design, but it's meant to net out the same depth of cost as retail's
+COGS + labor + rent, not just the product cost line, so the two channels
+are being compared on equivalent economics.
 
-**CAC payback.** How many months of one account's gross profit it takes to
-recoup its acquisition cost — independent of the LTV horizon.
+**Wholesale LTV.** Each active account generates monthly contribution
+profit (ACV ÷ 12 × contribution margin). The headline LTV:CAC uses a
+**{LTV_HORIZON_MONTHS}-month window** — it sums the contribution profit an
+average account is expected to generate, discounted only by the chance
+it's still active each month, and divides by CAC. A separate steady-state
+figure (shown alongside it) assumes an account stays forever, which is the
+textbook formula but can look artificially large at low churn — the
+finite-horizon number is the more defensible one to lead with.
 
-**Wholesale cash position.** New accounts are added each month and existing
-ones churn off (a "bathtub" model: this month's total = last month's
-survivors + new signups). Cumulative cash position is gross profit collected
-so far, *minus* CAC spent acquiring every signup — so it's a true net
-position, not just revenue.
+**CAC payback vs. total cash recovery.** CAC payback is months of
+contribution profit *after an account activates* needed to recoup its
+acquisition cost — it does not include the sales cycle. Total cash
+recovery from outreach = CAC payback + sales-cycle length, and it's this
+total figure the cash-position numbers actually reflect (see below), not
+just the post-activation figure. Retail reports the same two-part split:
+build-out payback after opening, and total payback from build-out start
+(payback + opening lag).
+
+**Timing lag.** Neither channel starts generating revenue the instant
+capital is committed. Wholesale: CAC is spent the month outreach begins,
+but an account only starts generating revenue — and counts toward churn —
+after the sales-cycle length has passed. Retail: build-out capital is
+committed on schedule, but a cafe generates no revenue until the opening
+lag has passed. A fractional lag (e.g. 2.5 months) splits proportionally
+between the two nearest whole months, so a cohort or cafe "opens" roughly
+half at month 2 and half at month 3 rather than jumping all at once.
+
+**Wholesale cash position.** Active accounts each month = last month's
+survivors + this month's newly-activated cohort (net of the timing lag
+above). Cumulative cash position is contribution profit collected so far,
+*minus* CAC spent acquiring every signup — a true net position, not just
+revenue.
 
 **Retail payback.** A store's monthly gross profit (revenue minus COGS,
-labor, and rent) divided into its build-out cost. The cash-position chart
-opens new stores at the modeled pace and nets build-out capex against
+labor, and rent) divided into its build-out cost — this is the
+after-opening figure. The cash-position chart opens new stores at the
+modeled pace (net of the opening lag) and nets build-out capex against
 cumulative gross profit across all open stores.
 
 **TAM / SAM / SOM.** TAM is every addressable account in the region. SAM is
@@ -134,8 +158,9 @@ capped at SAM.
 **Comparison horizon.** The strategic summary and break-even table compare
 wholesale vs. retail net cash position at month {COMPARISON_HORIZON_MONTHS}
 — a fixed point far enough out to separate the two channels, but soon
-enough to still be a near-term capital decision. Charts extend further (to
-{MARKET_SIZING_MONTHS} months) to show the fuller trajectory.
+enough to still be a near-term capital decision, and it fully reflects both
+channels' timing lags. Charts extend further (to {MARKET_SIZING_MONTHS}
+months) to show the fuller trajectory.
         """
     )
 
@@ -181,17 +206,28 @@ st.sidebar.button("↺ Reset to Base Case", on_click=_reset_to_base_case, width=
 with st.sidebar.expander("Wholesale economics", expanded=True):
     acv = st.slider("Average Contract Value — ACV ($/yr)", 2000, 30000, step=500, format="dollar", key="acv")
     cac = st.slider("Customer Acquisition Cost — CAC ($)", 300, 5000, step=100, format="dollar", key="cac")
-    gross_margin_ws = st.slider("Wholesale gross margin (%)", 30, 75, step=1, format="%d%%", key="gross_margin_ws") / 100
+    contribution_margin_ws = st.slider(
+        "Wholesale contribution margin (%)", 20, 70, step=1, format="%d%%", key="contribution_margin_ws",
+        help="Revenue left after product COGS, fulfillment/shipping, and ongoing account servicing — "
+             "one transparent input standing in for the full wholesale cost stack.",
+    ) / 100
     monthly_churn = st.slider("Monthly logo churn (%)", 0.5, 8.0, step=0.1, format="%.1f%%", key="monthly_churn") / 100
 
 with st.sidebar.expander("Sales capacity", expanded=False):
-    sales_cycle = st.slider("Sales cycle length (months)", 0.5, 6.0, step=0.5, key="sales_cycle")
+    sales_cycle = st.slider(
+        "Sales cycle length (months)", 0.5, 6.0, step=0.5, key="sales_cycle",
+        help="Accounts don't generate revenue until roughly this many months after outreach begins.",
+    )
     new_accounts = st.slider("New accounts signed / month", 1, 20, step=1, key="new_accounts")
 
 with st.sidebar.expander("Retail economics", expanded=False):
     st.caption("Build-out & occupancy")
     build_out = st.slider("New cafe build-out cost ($)", 100_000, 500_000, step=10_000, format="dollar", key="build_out")
     rent = st.slider("Monthly rent ($)", 3_000, 25_000, step=500, format="dollar", key="rent")
+    opening_lag = st.slider(
+        "Cafe build-out / opening lag (months)", 0.0, 12.0, step=0.5, key="opening_lag",
+        help="A cafe generates no revenue during build-out — it starts operating roughly this many months after capital is committed.",
+    )
     st.caption("Revenue drivers")
     avg_ticket = st.slider("Average ticket ($)", 3.0, 12.0, step=0.25, format="dollar", key="avg_ticket")
     daily_tx = st.slider("Daily transactions", 50, 600, step=10, key="daily_tx")
@@ -219,13 +255,19 @@ with st.sidebar.expander("Market sizing", expanded=False):
 # ---------------------------------------------------------------------------
 # Compute
 # ---------------------------------------------------------------------------
-payback = cac_payback_months(cac, acv, gross_margin_ws)
-ltc = ltv_to_cac_finite(acv, gross_margin_ws, monthly_churn, cac, months=LTV_HORIZON_MONTHS)
-ltc_steady_state = ltv_to_cac(acv, gross_margin_ws, monthly_churn, cac)
-ws_proj = wholesale_cohort_projection(acv, gross_margin_ws, monthly_churn, cac, new_accounts, months=MARKET_SIZING_MONTHS)
-sensitivity = ltv_cac_sensitivity_to_churn(acv, gross_margin_ws, cac)
+payback = cac_payback_months(cac, acv, contribution_margin_ws)
+ltc = ltv_to_cac_finite(acv, contribution_margin_ws, monthly_churn, cac, months=LTV_HORIZON_MONTHS)
+ltc_steady_state = ltv_to_cac(acv, contribution_margin_ws, monthly_churn, cac)
+ws_proj = wholesale_cohort_projection(
+    acv, contribution_margin_ws, monthly_churn, cac, new_accounts,
+    months=MARKET_SIZING_MONTHS, sales_cycle_months=sales_cycle,
+)
+sensitivity = ltv_cac_sensitivity_to_churn(acv, contribution_margin_ws, cac)
 retail_unit = retail_unit_economics(build_out, rent, avg_ticket, daily_tx, cogs_pct, labor_pct)
-retail_proj = retail_projection(build_out, rent, avg_ticket, daily_tx, cogs_pct, labor_pct, cafes_per_year, months=MARKET_SIZING_MONTHS)
+retail_proj = retail_projection(
+    build_out, rent, avg_ticket, daily_tx, cogs_pct, labor_pct, cafes_per_year,
+    months=MARKET_SIZING_MONTHS, opening_lag_months=opening_lag,
+)
 mkt = market_sizing(addressable_accounts, qualified_pct, acv, new_accounts, months=MARKET_SIZING_MONTHS)
 
 h = COMPARISON_HORIZON_MONTHS
@@ -233,26 +275,36 @@ wholesale_net_h = ws_proj[(ws_proj.scenario == "Base") & (ws_proj.month == h)]["
 retail_net_h = retail_proj[retail_proj.month == h]["cum_cash_position"].iloc[0]
 
 summary = generate_strategic_summary(
-    ltc, payback, retail_unit["payback_months"], wholesale_net_h, retail_net_h, sales_cycle
+    ltc, payback, retail_unit["payback_months"], wholesale_net_h, retail_net_h,
+    sales_cycle_months=sales_cycle, opening_lag_months=opening_lag,
 )
 breakevens = compute_breakevens(
-    acv, gross_margin_ws, monthly_churn, cac, new_accounts,
+    acv, contribution_margin_ws, monthly_churn, cac, new_accounts,
     build_out, rent, avg_ticket, daily_tx, cogs_pct, labor_pct, cafes_per_year,
+    sales_cycle_months=sales_cycle, opening_lag_months=opening_lag,
 )
 
 # ---------------------------------------------------------------------------
 # KPI row
 # ---------------------------------------------------------------------------
 k1, k2, k3, k4 = st.columns(4)
-k1.metric("Wholesale CAC payback", f"{payback:.1f} mo" if payback != float("inf") else "never")
+k1.metric("Wholesale CAC payback (after activation)", f"{payback:.1f} mo" if payback != float("inf") else "never")
+k1.caption(
+    f"From first outreach: {payback + sales_cycle:.1f} mo (incl. {sales_cycle:.1f}-mo sales cycle)"
+    if payback != float("inf") else "From first outreach: never"
+)
 k2.metric(f"{LTV_HORIZON_MONTHS}-mo LTV : CAC", f"{ltc:.2f}x" if ltc != float("inf") else "∞")
 k2.caption(
     f"Steady-state (assumes indefinite retention): {ltc_steady_state:.2f}x"
     if ltc_steady_state != float("inf") else "Steady-state: ∞ (zero churn assumed)"
 )
 k3.metric(
-    "Retail build-out payback",
+    "Retail build-out payback (after opening)",
     f"{retail_unit['payback_months']:.1f} mo" if retail_unit["payback_months"] != float("inf") else "never",
+)
+k3.caption(
+    f"From build-out start: {retail_unit['payback_months'] + opening_lag:.1f} mo (incl. {opening_lag:.1f}-mo opening lag)"
+    if retail_unit["payback_months"] != float("inf") else "From build-out start: never"
 )
 k4.metric(f"Modeled {MARKET_SIZING_MONTHS}-mo SAM penetration", fmt_pct(mkt["penetration_of_sam"]))
 k4.caption(interpret_sam_penetration(mkt["penetration_of_sam"]))
@@ -329,7 +381,7 @@ with tab1:
     left, right = st.columns([2, 1])
 
     with left:
-        st.markdown(f"**{MARKET_SIZING_MONTHS}-month MRR by scenario**")
+        st.markdown(f"**{MARKET_SIZING_MONTHS}-month MRR by scenario** — {sales_cycle:.1f}-mo sales-cycle lag applied")
         fig = go.Figure()
         ending_values = []
         for scenario, color in SCENARIO_COLORS.items():
@@ -385,7 +437,10 @@ with tab2:
     left, right = st.columns([3, 2])
 
     with left:
-        st.markdown(f"**Cumulative net cash position** — opening {cafes_per_year:.1f} cafes/year")
+        st.markdown(
+            f"**Cumulative net cash position** — opening {cafes_per_year:.1f} cafes/year, "
+            f"{opening_lag:.1f}-mo opening lag"
+        )
         fig3 = go.Figure()
         fig3.add_trace(
             go.Scatter(
@@ -416,7 +471,15 @@ with tab2:
             ]
         ).set_index("Line item")
         st.table(breakdown)
-        st.metric("Build-out payback", f"{retail_unit['payback_months']:.1f} mo" if retail_unit["payback_months"] != float("inf") else "never")
+        st.metric(
+            "Build-out payback (after opening)",
+            f"{retail_unit['payback_months']:.1f} mo" if retail_unit["payback_months"] != float("inf") else "never",
+        )
+        st.caption(
+            f"From build-out start: {retail_unit['payback_months'] + opening_lag:.1f} mo "
+            f"(incl. {opening_lag:.1f}-mo opening lag)"
+            if retail_unit["payback_months"] != float("inf") else "From build-out start: never"
+        )
 
 with tab3:
     st.markdown(f"**TAM → SAM → SOM** for {region}")

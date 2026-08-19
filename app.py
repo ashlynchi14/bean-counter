@@ -29,42 +29,41 @@ from model import (
 )
 
 # ---------------------------------------------------------------------------
-# Palette (validated categorical set — see dataviz method)
+# Palette — warm coffee-roaster tones, validated for colorblind-safe
+# separation with scripts/validate_palette.js (dataviz method). All three
+# categorical checks pass at surface #f7f1e8: chroma floor, CVD adjacent
+# separation, and normal-vision floor.
 # ---------------------------------------------------------------------------
-BLUE = "#2a78d6"        # scenario: Base / wholesale
-ORANGE = "#eb6834"      # scenario: Conservative / retail
-AQUA = "#1baf7a"        # scenario: Aggressive / good status
-INK = "#0b0b0b"
-SECONDARY_INK = "#52514e"
-MUTED = "#898781"
-GRID = "#e1e0d9"
-SURFACE = "#fcfcfb"
+AMBER = "#c9821f"       # scenario: Conservative
+RUST = "#a8442b"        # scenario: Base / primary accent
+GREEN = "#1baf7a"       # scenario: Aggressive
+INK = "#2b1810"
+SECONDARY_INK = "#6b5645"
+MUTED = "#9c8874"
+GRID = "#e6dcc8"
+SURFACE = "#f7f1e8"
 
-SCENARIO_COLORS = {"Conservative": ORANGE, "Base": BLUE, "Aggressive": AQUA}
+SCENARIO_COLORS = {"Conservative": AMBER, "Base": RUST, "Aggressive": GREEN}
 
 st.set_page_config(
     page_title="Bean Counter — Coffee Expansion Simulator",
-    page_icon="☕",
     layout="wide",
 )
 
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
-st.title("☕ Bean Counter")
+st.title("Bean Counter")
 st.caption(
-    "An interactive unit-economics model for expanding a specialty coffee "
-    "business — wholesale B2B accounts vs. company-owned retail cafes. "
-    "Adjust the assumptions on the left; every chart and takeaway below "
-    "updates live."
+    "A unit-economics model for expanding a specialty coffee business — "
+    "wholesale accounts vs. company-owned cafes. Adjust assumptions in the "
+    "sidebar; the metrics, charts, and takeaway below update immediately."
 )
 st.info(
-    "**How to read this:** every input below is a planning assumption, not a "
-    "claimed market fact — grounded in specialty coffee industry norms "
-    "(informed by multi-year independent research: 20+ industry contacts, "
-    "5 producing regions, 10+ cities) but built to be adjusted. Change the "
-    "numbers and watch the recommendation change with them.",
-    icon="ℹ️",
+    "Inputs are planning assumptions grounded in specialty coffee industry "
+    "norms — informed by multi-year independent research (20+ industry "
+    "contacts, 5 producing regions, 10+ cities) — not claimed market data. "
+    "Every value is adjustable."
 )
 
 # ---------------------------------------------------------------------------
@@ -72,7 +71,7 @@ st.info(
 # ---------------------------------------------------------------------------
 st.sidebar.header("Assumptions")
 
-with st.sidebar.expander("🏪 Wholesale / B2B channel", expanded=True):
+with st.sidebar.expander("Wholesale / B2B channel", expanded=True):
     acv = st.slider("Average Contract Value — ACV ($/yr)", 2000, 30000, 8000, step=500)
     cac = st.slider("Customer Acquisition Cost — CAC ($)", 300, 5000, 1200, step=100)
     gross_margin_ws = st.slider("Wholesale gross margin (%)", 30, 75, 58, step=1) / 100
@@ -80,7 +79,7 @@ with st.sidebar.expander("🏪 Wholesale / B2B channel", expanded=True):
     sales_cycle = st.slider("Sales cycle length (months)", 0.5, 6.0, 2.0, step=0.5)
     new_accounts = st.slider("New accounts signed / month", 1, 20, 4, step=1)
 
-with st.sidebar.expander("🏠 Retail channel", expanded=False):
+with st.sidebar.expander("Retail channel", expanded=False):
     build_out = st.slider("New cafe build-out cost ($)", 100_000, 500_000, 220_000, step=10_000)
     rent = st.slider("Monthly rent ($)", 3_000, 25_000, 11_000, step=500)
     avg_ticket = st.slider("Average ticket ($)", 3.0, 12.0, 6.25, step=0.25)
@@ -89,7 +88,7 @@ with st.sidebar.expander("🏠 Retail channel", expanded=False):
     labor_pct = st.slider("Labor (% of revenue)", 15, 45, 32, step=1) / 100
     cafes_per_year = st.slider("New cafes opened / year", 0.0, 6.0, 1.0, step=0.5)
 
-with st.sidebar.expander("🌎 Market sizing", expanded=False):
+with st.sidebar.expander("Market sizing", expanded=False):
     region = st.selectbox("Target region", list(REGION_DEFAULTS.keys()), index=0)
     region_defaults = REGION_DEFAULTS[region]
     addressable_accounts = st.number_input(
@@ -159,7 +158,7 @@ st.divider()
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab1, tab2, tab3 = st.tabs(["📈 Wholesale growth", "🏠 Retail economics", "🌎 Market sizing"])
+tab1, tab2, tab3 = st.tabs(["Wholesale growth", "Retail economics", "Market sizing"])
 
 with tab1:
     left, right = st.columns([2, 1])
@@ -198,9 +197,9 @@ with tab1:
                 x=retention["month"],
                 y=retention["pct_retained"],
                 mode="lines",
-                line=dict(color=BLUE, width=2),
+                line=dict(color=RUST, width=2),
                 fill="tozeroy",
-                fillcolor="rgba(42,120,214,0.12)",
+                fillcolor="rgba(168,68,43,0.12)",
             )
         )
         fig2.update_layout(
@@ -229,7 +228,7 @@ with tab2:
                 x=retail_proj["month"],
                 y=retail_proj["cum_cash_position"],
                 mode="lines",
-                line=dict(color=ORANGE, width=2),
+                line=dict(color=RUST, width=2),
             )
         )
         fig3.add_hline(y=0, line_dash="dot", line_color=MUTED)
@@ -258,7 +257,7 @@ with tab3:
         go.Funnel(
             y=funnel_labels,
             x=funnel_values,
-            marker=dict(color=[ORANGE, BLUE, AQUA]),
+            marker=dict(color=[AMBER, RUST, GREEN]),
             textinfo="value",
         )
     )
@@ -279,7 +278,7 @@ with tab3:
 
 st.divider()
 st.caption(
-    "Built by Ashlyn Chi Garcia (Tepper MS Strategy, CMU) as a proof-of-work project — "
-    "pandas/NumPy for the model, Streamlit + Plotly for the interface. "
-    "Assumptions are illustrative and fully adjustable; source: model.py in this repo."
+    "Built by Ashlyn Chi Garcia (Tepper MS Strategy, CMU). Model logic in "
+    "model.py; interface in Streamlit and Plotly. All assumptions above "
+    "are adjustable."
 )

@@ -9,12 +9,20 @@ Run with:  pytest
 import pytest
 
 from model import (
+    LTV_HORIZON_MONTHS,
+    PRESETS,
+    RETAIL_MARKET_DEFAULTS,
+    breakeven_robustness_summary,
     cac_payback_months,
+    classify_breakeven_robustness,
     compute_breakevens,
     generate_strategic_summary,
+    interpret_sam_penetration,
     ltv,
     ltv_cac_sensitivity_to_churn,
+    ltv_finite_horizon,
     ltv_to_cac,
+    ltv_to_cac_finite,
     market_sizing,
     retail_projection,
     retail_unit_economics,
@@ -69,6 +77,43 @@ def test_ltv_cac_sensitivity_is_monotonic_decreasing_in_churn():
     else fixed — this is the curve the sidebar chart plots directly."""
     df = ltv_cac_sensitivity_to_churn(acv=8000, gross_margin=0.58, cac=1200)
     assert (df["ltv_cac"].diff().dropna() <= 1e-9).all()
+
+
+# ---------------------------------------------------------------------------
+# Finite-horizon LTV — the headline metric, replacing the perpetuity-style
+# steady-state number that looked near-infinite at low churn.
+# ---------------------------------------------------------------------------
+
+
+def test_ltv_finite_horizon_is_less_than_or_equal_to_steady_state():
+    """A bounded window can never return more than the indefinite-retention
+    perpetuity value — this is the whole point of the fix."""
+    steady = ltv(acv=9000, gross_margin=0.58, monthly_churn=0.025)
+    finite = ltv_finite_horizon(acv=9000, gross_margin=0.58, monthly_churn=0.025, months=36)
+    assert finite < steady
+
+
+def test_ltv_finite_horizon_approaches_steady_state_over_a_long_window():
+    steady = ltv(acv=9000, gross_margin=0.58, monthly_churn=0.025)
+    very_long_finite = ltv_finite_horizon(acv=9000, gross_margin=0.58, monthly_churn=0.025, months=100_000)
+    assert very_long_finite == pytest.approx(steady, rel=1e-3)
+
+
+def test_ltv_finite_horizon_at_zero_churn_is_flat_monthly_profit_times_months():
+    monthly_gp = (9000 / 12) * 0.58
+    finite = ltv_finite_horizon(acv=9000, gross_margin=0.58, monthly_churn=0.0, months=36)
+    assert finite == pytest.approx(monthly_gp * 36)
+
+
+def test_ltv_to_cac_finite_matches_manual_calculation():
+    acv, margin, churn, cac, months = 9000, 0.58, 0.025, 1500, 36
+    monthly_gp = (acv / 12) * margin
+    expected_ltv = monthly_gp * (1 - (1 - churn) ** months) / churn
+    assert ltv_to_cac_finite(acv, margin, churn, cac, months) == pytest.approx(expected_ltv / cac)
+
+
+def test_ltv_to_cac_finite_is_infinite_at_zero_cac():
+    assert ltv_to_cac_finite(acv=9000, gross_margin=0.58, monthly_churn=0.025, cac=0) == float("inf")
 
 
 # ---------------------------------------------------------------------------
@@ -251,11 +296,16 @@ def test_breakevens_returns_all_four_drivers():
     assert set(result.keys()) == {"churn", "cac", "cafe_revenue", "build_out"}
 
 
-def test_churn_breakeven_matches_analytic_ltv_cac_one():
+def test_churn_breakeven_matches_finite_horizon_ltv_cac_one():
+    """The churn break-even should be the churn at which the *finite-horizon*
+    LTV:CAC (the headline metric) equals 1 — not the steady-state formula,
+    since the table right above it is explaining the headline number."""
     result = compute_breakevens(**COMMON_INPUTS)
     acv, margin, cac = COMMON_INPUTS["acv"], COMMON_INPUTS["gross_margin_ws"], COMMON_INPUTS["cac"]
-    expected = (acv / 12 * margin) / cac
-    assert result["churn"]["breakeven"] == pytest.approx(expected)
+    breakeven = result["churn"]["breakeven"]
+    assert breakeven is not None
+    ratio_at_breakeven = ltv_to_cac_finite(acv, margin, breakeven, cac, months=LTV_HORIZON_MONTHS)
+    assert ratio_at_breakeven == pytest.approx(1.0, rel=1e-4)
 
 
 def test_cac_breakeven_actually_flips_the_comparison():
@@ -299,3 +349,29 @@ def test_breakeven_direction_is_consistent_with_current_vs_breakeven():
                 assert entry["direction"] == "up"
             else:
                 assert entry["direction"] == "down"
+
+
+# ---------------------------------------------------------------------------
+# Break-even robustness interpretation
+# ---------------------------------------------------------------------------
+
+
+def test_classify_breakeven_robustness_out_of_range_is_robust():
+    result = compute_breakevens(**COMMON_INPUTS)
+    out_of_range = [e for e in result.values() if not e["in_range"]]
+    assert out_of_range, "fixture should have at least one out-of-range driver to test against"
+    assert classify_breakeven_robustness(out_of_range[0]).startswith("Robust")
+
+
+def test_classify_breakeven_robustness_close_breakeven_is_flagged_fragile():
+    entry = {"label": "Test driver", "current": 100.0, "breakeven": 105.0, "in_range": True}
+    assert "fragile" in classify_breakeven_robustness(entry).lower()
+
+
+def test_classify_breakeven_robustness_far_breakeven_is_not_flagged_fragile():
+    entry = {"label": "Test driver", "current": 100.0, "breakeven": 500.0, "in_range": True}
+    assert "fragile" not in classify_breakeven_robustness(entry).lower()
+
+
+def test_breakeven_robustness_summary_all_robust_says_so():
+    fake = {
